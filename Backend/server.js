@@ -3,12 +3,87 @@ import multer from 'multer';
 import { v2 as cloudinary } from 'cloudinary';
 import dotenv from 'dotenv';
 import cors from 'cors';
+import mongoose from 'mongoose';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 
 dotenv.config();
 const app = express();
 app.use(cors());
 app.use(express.json());
 
+// MongoDB Connection
+mongoose.connect(process.env.MONGO_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+}).then(() => console.log("MongoDB Connected"))
+  .catch(err => console.error("MongoDB Connection Error:", err));
+
+// User Schema & Model
+const userSchema = new mongoose.Schema({
+  name: String,
+  email: { type: String, unique: true },
+  password: String,
+});
+
+const User = mongoose.model('User', userSchema);
+
+// Middleware to verify JWT
+const verifyToken = (req, res, next) => {
+  const token = req.header('Authorization');
+  if (!token) return res.status(401).json({ message: "Access Denied" });
+
+  try {
+    const verified = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = verified;
+    next();
+  } catch (err) {
+    res.status(400).json({ message: "Invalid Token" });
+  }
+};
+
+// Register Route
+app.post('/register', async (req, res) => {
+  try {
+    const { name, email, password } = req.body;
+    if (!name || !email || !password) return res.status(400).json({ message: "All fields are required" });
+
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    const newUser = new User({ name, email, password: hashedPassword });
+    await newUser.save();
+
+    res.status(201).json({ message: "User registered successfully" });
+  } catch (error) {
+    res.status(500).json({ message: "Error registering user", error });
+  }
+});
+
+// Login Route
+app.post('/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const user = await User.findOne({ email });
+    if (!user) return res.status(400).json({ message: "Invalid credentials" });
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) return res.status(400).json({ message: "Invalid credentials" });
+
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    res.json({ message: "Login successful", token });
+  } catch (error) {
+    res.status(500).json({ message: "Error logging in", error });
+  }
+});
+
+// Protected Route Example
+app.get('/profile', verifyToken, async (req, res) => {
+  const user = await User.findById(req.user.id).select('-password');
+  res.json(user);
+});
+
+// Cloudinary Config
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
@@ -18,9 +93,11 @@ cloudinary.config({
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
+// Upload Image
 app.post('/upload', upload.single('image'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
+
     const result = await cloudinary.uploader.upload_stream(
       { folder: 'my_images' },
       (error, result) => {
@@ -39,28 +116,30 @@ app.post('/upload', upload.single('image'), async (req, res) => {
   }
 });
 
+// Fetch Random Images
 app.get('/random-images', async (req, res) => {
-    try {
-      const response = await cloudinary.api.resources({
-        type: 'upload',
-        prefix: 'my_images/',
-        max_results: 100 
-      });
-  
-      const images = response.resources;
-      if (!images || images.length === 0) {
-        return res.json({ message: 'No images found' });
-      }
-  
-      const shuffled = images.sort(() => 0.5 - Math.random());
-      const randomImages = shuffled.slice(0, 20).map(img => img.secure_url);
-  
-      res.json({ images: randomImages });
-    } catch (error) {
-      console.error(error);
-      res.status(500).json({ message: 'Error fetching images', error });
-    }
-  });
+  try {
+    const response = await cloudinary.api.resources({
+      type: 'upload',
+      prefix: 'my_images/',
+      max_results: 100
+    });
 
+    const images = response.resources;
+    if (!images || images.length === 0) {
+      return res.json({ message: 'No images found' });
+    }
+
+    const shuffled = images.sort(() => 0.5 - Math.random());
+    const randomImages = shuffled.slice(0, 20).map(img => img.secure_url);
+
+    res.json({ images: randomImages });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Error fetching images', error });
+  }
+});
+
+// Start Server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
