@@ -24,7 +24,9 @@ const userSchema = new mongoose.Schema({
   name: String,
   email: { type: String, unique: true },
   password: String,
+  images: [String] // 🟢 Add this field to store image URLs
 });
+
 
 const User = mongoose.model('User', userSchema);
 
@@ -77,7 +79,7 @@ app.post('/login', async (req, res) => {
   }
 });
 
-// Protected Route Example
+// Protected Route - Fetch Profile
 app.get('/profile', verifyToken, async (req, res) => {
   const user = await User.findById(req.user.id).select('-password');
   res.json(user);
@@ -93,30 +95,55 @@ cloudinary.config({
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
-// Upload Image
-app.post('/upload', upload.single('image'), async (req, res) => {
+// Upload Image & Store Link in User's Profile
+app.post('/upload', verifyToken, upload.single('image'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
 
-    const result = await cloudinary.uploader.upload_stream(
-      { folder: 'my_images' },
-      (error, result) => {
-        if (error) return res.status(500).json({ message: 'Upload failed', error });
+    // Find user first
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: "User not found" });
 
-        res.json({
+    const uploadStream = cloudinary.uploader.upload_stream(
+      { folder: 'my_images' },
+      async (error, result) => {
+        if (error) {
+          console.error("Cloudinary Upload Error:", error);
+          return res.status(500).json({ message: 'Upload failed', error });
+        }
+
+        // Save image URL in user's images array
+        user.images.push(result.secure_url);
+        await user.save();
+
+        return res.json({
           message: 'Upload successful',
           imageUrl: result.secure_url,
         });
       }
     );
 
-    result.end(req.file.buffer);
+    uploadStream.end(req.file.buffer);
   } catch (error) {
+    console.error("Server Error:", error);
     res.status(500).json({ message: 'Error uploading image', error });
   }
 });
 
-// Fetch Random Images
+
+// Fetch All Images Uploaded by User
+app.get('/my-images', verifyToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    res.json({ images: user.images });
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching images', error });
+  }
+});
+
+// Fetch Random Images (General)
 app.get('/random-images', async (req, res) => {
   try {
     const response = await cloudinary.api.resources({
